@@ -20,6 +20,8 @@ mongoose.connect(process.env.MONGO_URI, {
 
 // Donation Model
 const donationSchema = new mongoose.Schema({
+    donorName: { type: String },
+    donorEmail: { type: String, required: true },
     amount: { type: Number, required: true },
     reference: { type: String, required: true, unique: true },
     createdAt: { type: Date, default: Date.now }
@@ -27,16 +29,23 @@ const donationSchema = new mongoose.Schema({
 const Donation = mongoose.model('Donation', donationSchema);
 
 // Initialize payment
-app.post('/donations/init', (req,res)=>{
-    const { amount, email } = req.body;
-    if(!amount || !email) return res.status(400).json({ error: 'Amount and email required' });
+app.post('/donations/init', async (req,res)=>{
+    const { donorName, donorEmail, amount } = req.body;
+    if(!donorEmail || !amount) return res.status(400).json({ error: 'Email and amount required' });
 
-    // Unique reference
-    const reference = 'donor_' + Date.now() + '_' + Math.floor(Math.random()*1000);
-    res.json({ 
-        publicKey: process.env.PAYSTACK_PUBLIC_KEY,
-        reference
-    });
+    try {
+        const reference = 'donor_' + Date.now() + '_' + Math.floor(Math.random()*1000);
+        // Save pending donation
+        await Donation.create({ donorName, donorEmail, amount, reference });
+
+        res.json({ 
+            publicKey: process.env.PAYSTACK_PUBLIC_KEY,
+            reference
+        });
+    } catch(err){
+        console.error(err);
+        res.status(500).json({ error: 'Failed to initialize payment' });
+    }
 });
 
 // Webhook endpoint
@@ -56,15 +65,14 @@ app.post('/donations/webhook', async (req,res)=>{
         const reference = event.data.reference;
 
         try{
-            const exists = await Donation.findOne({ reference });
-            if(!exists){
-                await Donation.create({ amount: amountNaira, reference });
-                console.log(`✅ Donation received: ₦${amountNaira}`);
-            } else {
-                console.log(`ℹ️ Duplicate reference ignored: ${reference}`);
+            const donation = await Donation.findOne({ reference });
+            if(donation && donation.amount !== amountNaira){
+                donation.amount = amountNaira;
+                await donation.save();
             }
+            console.log(`✅ Donation confirmed: ₦${amountNaira} - ${reference}`);
         } catch(err){
-            console.error('❌ Error saving donation:', err);
+            console.error('❌ Error processing donation:', err);
         }
     }
     res.sendStatus(200);
